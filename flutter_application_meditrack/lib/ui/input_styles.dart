@@ -3,7 +3,7 @@ import 'package:flutter/material.dart';
 
 class AppColors {
   static const primary   = Color(0xFF5B4DF3);
-  static const fieldFill = Color(0xFFF2F4FF);
+  static const fieldFill = Color(0xFFF2F4FF);  //Color.fromARGB(238, 221, 214, 253);
   static const border    = Color(0xFFCAD1FF);
   static const suffix    = Color(0xFF6F6F79);
 }

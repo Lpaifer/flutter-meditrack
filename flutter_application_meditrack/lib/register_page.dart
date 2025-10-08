@@ -93,7 +93,7 @@ class _RegisterPageState extends State<RegisterPage> {
                     'Criar Conta',
                     style: textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.w800,
-                      color: const Color(0xFF3A2E7C),
+                      color: AppColors.primary,
                       fontSize: 24,
                     ),
                     textAlign: TextAlign.center,
@@ -211,20 +211,14 @@ class _RegisterPageState extends State<RegisterPage> {
                         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       ),
                       onPressed: () {
-                        if (Navigator.canPop(context)) {
-                          // se o Register foi aberto a partir do Login, apenas volta
-                          Navigator.pop(context);
-                        } else {
-                          // se chegou aqui por deep link ou outra rota, abre o Login
-                          Navigator.of(context).pushReplacement(
-                            MaterialPageRoute(builder: (_) => const LoginPage()),
-                          );
-                        }
+                        Navigator.of(context).pushReplacement(
+                          MaterialPageRoute(builder: (_) => const LoginPage()),
+                        );
                       },
                       child: Text(
                         'Entrar',
                         style: GoogleFonts.poppins(
-                          color: AppColors.primary,
+                          color: Colors.indigo,
                           fontWeight: FontWeight.w600,
                         ),
                       ),

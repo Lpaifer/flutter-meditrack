@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_application_meditrack/home_page.dart';
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
 import 'package:google_fonts/google_fonts.dart';
 
@@ -73,7 +74,9 @@ class _ForgotPasswordPageState extends State<ForgotPasswordPage> {
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(content: Text('Senha atualizada com sucesso!')),
     );
-    Navigator.of(context).maybePop();
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const HomePage()),
+    );
   }
 
   Future<void> _resendCode() async {

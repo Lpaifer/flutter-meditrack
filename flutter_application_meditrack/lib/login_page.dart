@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
-import 'package:flutter_application_meditrack/forget_password_page.dart';
+import 'package:flutter_application_meditrack/home_page.dart';
+import 'package:flutter_application_meditrack/recovery_password_email.dart';
 import 'package:flutter_application_meditrack/register_page.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
@@ -19,6 +20,7 @@ class _LoginPageState extends State<LoginPage> {
   final _passCtrl = TextEditingController();
 
   bool _obscure = true;
+  bool _isSubmitting = false;
   
   String? _validateEmail(String? v) {
     if (v == null || v.trim().isEmpty) return 'Informe o e-mail';
@@ -35,10 +37,15 @@ class _LoginPageState extends State<LoginPage> {
 
   Future<void> _submit() async {
     if (!(_formKey.currentState?.validate() ?? false)) return;
+    FocusScope.of(context).unfocus();
 
-    // TODO: autenticar no seu backend / Firebase / Supabase
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Login efetuado (mock).')),
+    setState(() => _isSubmitting = true);
+    await Future.delayed(const Duration(milliseconds: 700)); // simula rede
+    if (!mounted) return;
+    setState(() => _isSubmitting = false);
+
+    Navigator.of(context).pushReplacement(
+      MaterialPageRoute(builder: (_) => const HomePage()),
     );
   }
 
@@ -130,7 +137,7 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     onPressed: () {
                       Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const ForgotPasswordPage()),
+                      MaterialPageRoute(builder: (_) => const SendResetCodePage()),
                       );
                     },
                     child: const Text(
@@ -152,7 +159,7 @@ class _LoginPageState extends State<LoginPage> {
                   child: CupertinoButton(
                     padding: const EdgeInsets.all(24),
                     color: const Color(0xFF5808DA),
-                    onPressed: _submit,
+                    onPressed: _isSubmitting ? null : _submit,
                     child: const Text(
                       "Entrar",
                       style: TextStyle(
@@ -194,7 +201,6 @@ class _LoginPageState extends State<LoginPage> {
                           color: Colors.indigo,
                           fontSize: 16,
                           fontWeight: FontWeight.w700,
-                          decoration: TextDecoration.underline,
                         ),
                       ),
                     ),
