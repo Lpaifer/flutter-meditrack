@@ -1,7 +1,11 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_application_meditrack/login_page.dart';
-import 'package:flutter_application_meditrack/ui/input_styles.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:dio/dio.dart';
+import 'package:flutter_application_meditrack/ui/input_styles.dart';
+import 'package:flutter_application_meditrack/login_page.dart';
+import 'package:flutter_application_meditrack/home_page.dart';
+import 'package:flutter_application_meditrack/core/api_client.dart';
+import 'package:flutter_application_meditrack/core/token_service.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key, this.onTapEntrar});
@@ -25,10 +29,11 @@ class _RegisterPageState extends State<RegisterPage> {
   bool _obscure2 = true;
   bool _isSubmitting = false;
 
+  final Dio _dio = ApiClient.instance.dio;
+
   String? _validateEmail(String? v) {
     if (v == null || v.trim().isEmpty) return 'Informe o email';
-    final email = v.trim();
-    final ok = RegExp(r"^[\w\.\-+]+@[\w\-]+\.[\w\.\-]+$").hasMatch(email);
+    final ok = RegExp(r"^[\w\.\-+]+@[\w\-]+\.[\w\.\-]+$").hasMatch(v.trim());
     if (!ok) return 'Email inválido';
     return null;
   }
@@ -43,17 +48,87 @@ class _RegisterPageState extends State<RegisterPage> {
     final formOk = _formKey.currentState?.validate() ?? false;
     if (!formOk) return;
 
+    FocusScope.of(context).unfocus();
     setState(() => _isSubmitting = true);
 
-    // TODO: integrar com seu backend/Firebase/Supabase
-    await Future.delayed(const Duration(milliseconds: 600));
+    final email = _emailCtrl.text.trim();
+    final password = _passCtrl.text;
+    final name = _nameCtrl.text.trim();
 
-    if (!mounted) return;
-    setState(() => _isSubmitting = false);
+    try {
+      // 1) Registrar
+      final reg = await _dio.post('/auth/register', data: {
+        'email': email,
+        'password': password,
+        // Caso seu backend aceite nome no cadastro:
+        'name': name.isEmpty ? null : name,
+      });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Conta criada com sucesso!')),
-    );
+      // Alguns backends já retornam token no register
+      String? token;
+      if (reg.data is Map) {
+        final map = reg.data as Map;
+        if (map['access_token'] is String && (map['access_token'] as String).isNotEmpty) {
+          token = map['access_token'] as String;
+        }
+      }
+
+      // 2) Se não veio token, faz login automático
+      token ??= await _loginAfterRegister(email, password);
+
+      // 3) Salva token e vai pra Home
+      await TokenService.instance.setToken(token);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Conta criada com sucesso!')),
+      );
+      Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(builder: (_) => const HomePage()),
+        (_) => false,
+      );
+    } on DioException catch (e) {
+      String msg = 'Falha ao criar conta. Tente novamente.';
+      if (e.response != null) {
+        final code = e.response?.statusCode ?? 0;
+        if (code == 409) {
+          msg = 'Email já cadastrado.';
+        } else if (code == 400) {
+          msg = 'Dados inválidos (400). Confira os campos.';
+        } else if (code >= 500) {
+          msg = 'Servidor indisponível ($code).';
+        } else {
+          final data = e.response?.data;
+          if (data is Map && data['message'] != null) {
+            msg = data['message'].toString();
+          }
+        }
+      } else if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout) {
+        msg = 'Tempo esgotado. Verifique sua conexão.';
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Erro inesperado ao criar conta.')),
+      );
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
+  }
+
+  Future<String> _loginAfterRegister(String email, String password) async {
+    final res = await _dio.post('/auth/login', data: {
+      'email': email,
+      'password': password,
+    });
+    final token = (res.data is Map) ? res.data['access_token'] as String? : null;
+    if (token == null || token.isEmpty) {
+      throw Exception('Não foi possível autenticar após o cadastro.');
+    }
+    return token;
   }
 
   @override
@@ -197,34 +272,40 @@ class _RegisterPageState extends State<RegisterPage> {
                     ),
                   ),
                   const SizedBox(height: 18),
+
+                  // Link "Entrar"
                   Row(
-                  mainAxisAlignment: MainAxisAlignment.start,
-                  children: [
-                    Text(
-                      'Já tem uma conta? ',
-                      style: GoogleFonts.poppins(color: const Color(0xFF8B8B97)),
-                    ),
-                    TextButton(
-                      style: TextButton.styleFrom(
-                        padding: EdgeInsets.zero,
-                        minimumSize: const Size(0, 0),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    mainAxisAlignment: MainAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Já tem uma conta? ',
+                        style: GoogleFonts.poppins(color: const Color(0xFF8B8B97)),
                       ),
-                      onPressed: () {
-                        Navigator.of(context).pushReplacement(
-                          MaterialPageRoute(builder: (_) => const LoginPage()),
-                        );
-                      },
-                      child: Text(
-                        'Entrar',
-                        style: GoogleFonts.poppins(
-                          color: Colors.indigo,
-                          fontWeight: FontWeight.w600,
+                      TextButton(
+                        style: TextButton.styleFrom(
+                          padding: EdgeInsets.zero,
+                          minimumSize: const Size(0, 0),
+                          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        ),
+                        onPressed: () {
+                          if (widget.onTapEntrar != null) {
+                            widget.onTapEntrar!.call();
+                            return;
+                          }
+                          Navigator.of(context).pushReplacement(
+                            MaterialPageRoute(builder: (_) => const LoginPage()),
+                          );
+                        },
+                        child: Text(
+                          'Entrar',
+                          style: GoogleFonts.poppins(
+                            color: Colors.indigo,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
-                    ),
-                  ],
-                ),
+                    ],
+                  ),
                   const SizedBox(height: 12),
                 ],
               ),

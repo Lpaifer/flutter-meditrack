@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:flutter_application_meditrack/login_page.dart';
+import 'package:flutter_application_meditrack/splash_page.dart';
 import 'package:flutter_localizations/flutter_localizations.dart'; // <-- IMPORTANTE
 import 'package:intl/intl.dart';
 import 'package:intl/date_symbol_data_local.dart';
@@ -28,7 +28,7 @@ class MyApp extends StatelessWidget {
         GlobalWidgetsLocalizations.delegate,
         GlobalCupertinoLocalizations.delegate,
       ],
-      home: const LoginPage(),
+      home: const SplashPage(),
     );
   }
 }

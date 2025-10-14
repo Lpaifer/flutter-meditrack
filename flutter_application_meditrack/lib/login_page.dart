@@ -1,10 +1,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:dio/dio.dart';
+
 import 'package:flutter_application_meditrack/home_page.dart';
 import 'package:flutter_application_meditrack/recovery_password_email.dart';
 import 'package:flutter_application_meditrack/register_page.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
+
+// Extras que já te entreguei:
+// - lib/core/api_client.dart (Dio singleton com interceptor de Bearer)
+// - lib/core/token_service.dart (cache + flutter_secure_storage)
+import 'package:flutter_application_meditrack/core/api_client.dart';
+import 'package:flutter_application_meditrack/core/token_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -21,7 +29,10 @@ class _LoginPageState extends State<LoginPage> {
 
   bool _obscure = true;
   bool _isSubmitting = false;
-  
+
+  // Usa o Dio global com baseUrl = BACKEND_URL
+  final Dio _dio = ApiClient.instance.dio;
+
   String? _validateEmail(String? v) {
     if (v == null || v.trim().isEmpty) return 'Informe o e-mail';
     final ok = RegExp(r'^[\w\.\-+]+@[\w\-]+\.[\w\.\-]+$').hasMatch(v.trim());
@@ -40,13 +51,53 @@ class _LoginPageState extends State<LoginPage> {
     FocusScope.of(context).unfocus();
 
     setState(() => _isSubmitting = true);
-    await Future.delayed(const Duration(milliseconds: 700)); // simula rede
-    if (!mounted) return;
-    setState(() => _isSubmitting = false);
+    try {
+      final res = await _dio.post('/auth/login', data: {
+        'email': _emailCtrl.text.trim(),
+        'password': _passCtrl.text,
+      });
 
-    Navigator.of(context).pushReplacement(
-      MaterialPageRoute(builder: (_) => const HomePage()),
-    );
+      // Espera { access_token: '...' }
+      final token = (res.data is Map) ? res.data['access_token'] as String? : null;
+      if (token == null || token.isEmpty) {
+        throw Exception('Resposta inesperada do servidor.');
+      }
+
+      await TokenService.instance.setToken(token);
+
+      if (!mounted) return;
+      Navigator.of(context).pushReplacement(
+        MaterialPageRoute(builder: (_) => const HomePage()),
+      );
+    } on DioException catch (e) {
+      String msg = 'Falha ao entrar. Tente novamente.';
+      if (e.response != null) {
+        final code = e.response?.statusCode ?? 0;
+        if (code == 401 || code == 403) {
+          msg = 'Credenciais inválidas. Verifique e-mail e senha.';
+        } else if (code == 400) {
+          msg = 'Requisição inválida (400). Confira os campos.';
+        } else if (code >= 500) {
+          msg = 'Servidor indisponível ($code).';
+        } else {
+          final data = e.response?.data;
+          if (data is Map && data['message'] != null) {
+            msg = data['message'].toString();
+          }
+        }
+      } else if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout) {
+        msg = 'Tempo esgotado. Verifique sua conexão.';
+      }
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
+    } catch (_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+          .showSnackBar(const SnackBar(content: Text('Erro inesperado ao entrar.')));
+    } finally {
+      if (mounted) setState(() => _isSubmitting = false);
+    }
   }
 
   @override
@@ -95,7 +146,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 80),
 
-                // E-mail (mesmo estilo da RegisterPage)
+                // E-mail
                 TextFormField(
                   controller: _emailCtrl,
                   textInputAction: TextInputAction.next,
@@ -106,7 +157,7 @@ class _LoginPageState extends State<LoginPage> {
                 ),
                 const SizedBox(height: 18),
 
-                // Senha (mesmo estilo + toggle de visibilidade)
+                // Senha
                 TextFormField(
                   controller: _passCtrl,
                   textInputAction: TextInputAction.done,
@@ -137,7 +188,7 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     onPressed: () {
                       Navigator.of(context).push(
-                      MaterialPageRoute(builder: (_) => const SendResetCodePage()),
+                        MaterialPageRoute(builder: (_) => const SendResetCodePage()),
                       );
                     },
                     child: const Text(
@@ -160,14 +211,20 @@ class _LoginPageState extends State<LoginPage> {
                     padding: const EdgeInsets.all(24),
                     color: const Color(0xFF5808DA),
                     onPressed: _isSubmitting ? null : _submit,
-                    child: const Text(
-                      "Entrar",
-                      style: TextStyle(
-                        color: Colors.white,
-                        fontSize: 16,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    child: _isSubmitting
+                        ? const SizedBox(
+                            height: 20,
+                            width: 20,
+                            child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
+                          )
+                        : const Text(
+                            "Entrar",
+                            style: TextStyle(
+                              color: Colors.white,
+                              fontSize: 16,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                   ),
                 ),
                 const SizedBox(height: 12),
