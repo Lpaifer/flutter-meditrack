@@ -7,10 +7,7 @@ import 'package:flutter_application_meditrack/home_page.dart';
 import 'package:flutter_application_meditrack/recovery_password_email.dart';
 import 'package:flutter_application_meditrack/register_page.dart';
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
-
-// Extras que já te entreguei:
-// - lib/core/api_client.dart (Dio singleton com interceptor de Bearer)
-// - lib/core/token_service.dart (cache + flutter_secure_storage)
+import 'package:flutter_application_meditrack/core/env.dart';
 import 'package:flutter_application_meditrack/core/api_client.dart';
 import 'package:flutter_application_meditrack/core/token_service.dart';
 
@@ -99,6 +96,16 @@ class _LoginPageState extends State<LoginPage> {
       if (mounted) setState(() => _isSubmitting = false);
     }
   }
+
+  @override
+  void initState() {
+    super.initState();
+    if (Env.useMockAuth) {
+      _emailCtrl.text = Env.mockEmail;
+      _passCtrl.text  = Env.mockPass;
+    }
+  }
+
 
   @override
   void dispose() {

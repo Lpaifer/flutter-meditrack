@@ -1,5 +1,8 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter_application_meditrack/pharmacy_near_you.dart'; // tela do mapa de farmácias
+import 'package:flutter_application_meditrack/doses_page.dart';        // NOVO: tela de doses
+import 'package:flutter_application_meditrack/profile_page.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -27,6 +30,9 @@ class _HomePageState extends State<HomePage> {
   // ---------- Próxima dose / contador ----------
   Timer? _ticker;
   Duration? _nextIn;
+
+  // ---------- Bottom nav ----------
+  int _navIndex = 1; // 0=DOSES, 1=HOME, 2=PERFIL
 
   @override
   void initState() {
@@ -92,8 +98,6 @@ class _HomePageState extends State<HomePage> {
 
   void _openDosesForDay(DateTime day) {
     final doses = _eventsLoader(day);
-    // ignore: unused_local_variable
-    final month = DateFormat.MMMM('pt_BR').format(day);
     showModalBottomSheet(
       context: context,
       isScrollControlled: false,
@@ -133,7 +137,7 @@ class _HomePageState extends State<HomePage> {
               child: Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
-                  color: Color.fromARGB(238, 221, 214, 253),
+                  color: const Color.fromARGB(238, 221, 214, 253),
                   borderRadius: BorderRadius.circular(18),
                 ),
                 child: Column(
@@ -161,7 +165,7 @@ class _HomePageState extends State<HomePage> {
                               ),
                               children: [
                                 TextSpan(text: '${d.medName}\n'),
-                                WidgetSpan(child: SizedBox(height: 4)),
+                                const WidgetSpan(child: SizedBox(height: 4)),
                                 TextSpan(
                                   text: h,
                                   style: GoogleFonts.poppins(
@@ -214,13 +218,28 @@ class _HomePageState extends State<HomePage> {
         ],
       ),
 
-      // Bottom nav mock (ícones placeholders)
+      // Bottom nav
       bottomNavigationBar: NavigationBar(
         backgroundColor: const Color.fromARGB(255, 255, 255, 255),
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         indicatorColor: Colors.deepPurple.shade100,
-        selectedIndex: 1,
-        onDestinationSelected: (_) {},
+        selectedIndex: _navIndex,
+        onDestinationSelected: (i) {
+          if (i == 0) {
+            // DOSES -> abre a tela de doses
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const DosesPage()),
+            );
+            // mantém o índice na HOME
+            return;
+          }
+          if (i == 1) setState(() => _navIndex = 1); // HOME
+          if (i == 2) {
+            Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const ProfilePage()), // PERFIL (temporário)
+            );
+          }
+        },
         destinations: const [
           NavigationDestination(icon: Icon(Icons.science_outlined), label: 'DOSES'),
           NavigationDestination(icon: Icon(Icons.home_outlined),   label: 'HOME'),
@@ -298,7 +317,11 @@ class _HomePageState extends State<HomePage> {
                           borderRadius: BorderRadius.circular(12),
                         ),
                       ),
-                      onPressed: () {},
+                      onPressed: () {
+                        Navigator.of(context).push(
+                          MaterialPageRoute(builder: (_) => const NearbyPharmaciesPage()),
+                        );
+                      },
                       child: Text('VEJA AQUI',
                           style: GoogleFonts.poppins(
                             fontWeight: FontWeight.w700,
@@ -312,7 +335,7 @@ class _HomePageState extends State<HomePage> {
             ),
             const SizedBox(height: 24),
 
-            // ---- Card Calendário ----  
+            // ---- Card Calendário ----
             _Card(
               padding: const EdgeInsets.fromLTRB(8, 8, 8, 4),
               child: Column(
@@ -379,8 +402,7 @@ class _Card extends StatelessWidget {
   final Widget child;
   final EdgeInsets padding;
 
-  // ignore: unused_element_parameter
-  const _Card({required this.child, this.padding = const EdgeInsets.all(16), super.key});
+  const _Card({required this.child, this.padding = const EdgeInsets.all(16)});
 
   @override
   Widget build(BuildContext context) {
@@ -388,7 +410,7 @@ class _Card extends StatelessWidget {
       width: double.infinity,
       padding: padding,
       decoration: BoxDecoration(
-        color: Color.fromARGB(238, 221, 214, 253),
+        color: const Color.fromARGB(238, 221, 214, 253),
         borderRadius: BorderRadius.circular(22),
         boxShadow: const [
           BoxShadow(
