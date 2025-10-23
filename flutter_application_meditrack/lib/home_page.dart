@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_application_meditrack/pharmacy_near_you.dart'; // tela do mapa de farmácias
 import 'package:flutter_application_meditrack/doses_page.dart';        // NOVO: tela de doses
 import 'package:flutter_application_meditrack/profile_page.dart';
+import 'package:flutter_application_meditrack/settings_page.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 import 'package:table_calendar/table_calendar.dart';
@@ -213,7 +214,11 @@ class _HomePageState extends State<HomePage> {
           IconButton(
             iconSize: 32,
             icon: const Icon(Icons.settings_outlined, color: Colors.black87),
-            onPressed: () {},
+            onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute(builder: (_) => const SettingsPage()),
+              );
+            },
           )
         ],
       ),
