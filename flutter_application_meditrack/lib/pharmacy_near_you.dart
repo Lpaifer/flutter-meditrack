@@ -1,4 +1,3 @@
-import 'dart:math';
 import 'package:dio/dio.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_map/flutter_map.dart';
@@ -7,7 +6,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:latlong2/latlong.dart';
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
 import 'package:url_launcher/url_launcher.dart';
-
 
 class Pharmacy {
   final String name;
@@ -33,13 +31,19 @@ class NearbyPharmaciesPage extends StatefulWidget {
 }
 
 class _NearbyPharmaciesPageState extends State<NearbyPharmaciesPage> {
-  static const _radiusMeters = 2500; // raio de busca
-  static const _overpassUrl = 'https://overpass-api.de/api/interpreter';
+  static const _radiusMeters = 2500;
+
+  // Mirrors do Overpass (ordem de tentativa)
+  static const List<String> _overpassEndpoints = [
+    'https://overpass-api.de/api/interpreter',
+    'https://overpass.kumi.systems/api/interpreter',
+    'https://overpass.openstreetmap.ru/api/interpreter',
+  ];
 
   final _mapController = MapController();
   final _dio = Dio(BaseOptions(
-    connectTimeout: const Duration(seconds: 12),
-    receiveTimeout: const Duration(seconds: 12),
+    connectTimeout: const Duration(seconds: 20),
+    receiveTimeout: const Duration(seconds: 20),
     headers: {'User-Agent': 'meditrack-app/1.0'},
   ));
 
@@ -48,123 +52,176 @@ class _NearbyPharmaciesPageState extends State<NearbyPharmaciesPage> {
   bool _loading = true;
   String? _error;
 
+  // Retry contínuo
+  bool _retrying = false;
+  bool _stopRequested = false;
+  int _attempt = 0;
+
   @override
   void initState() {
     super.initState();
-    _load();
+    _load(); // tentativa única inicial
   }
 
   Future<void> _openDirections(Pharmacy p) async {
-  // rota direta no Google Maps (abre app se disponível ou o navegador)
-  final uri = Uri.parse(
-    'https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving',
-  );
-  final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
-  if (!ok) {
-    // fallback: abre em uma aba do app
-    await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+    final uri = Uri.parse(
+      'https://www.google.com/maps/dir/?api=1&destination=${p.lat},${p.lng}&travelmode=driving',
+    );
+    final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!ok) {
+      await launchUrl(uri, mode: LaunchMode.inAppBrowserView);
+    }
   }
-}
 
-  Future<void> _load() async {
-    setState(() { _loading = true; _error = null; });
-    try {
-      // 1) Permissão + localização
-      final hasPerm = await _ensurePermission();
-      if (!hasPerm) {
-        throw 'Permissão de localização negada.';
+  Future<void> _load({bool untilSuccess = false}) async {
+    _stopRequested = false;
+    _attempt = 0;
+
+    setState(() {
+      _retrying = untilSuccess;
+      _loading = true;
+      _error = null;
+      _results = [];
+    });
+
+    while (mounted && !_stopRequested) {
+      try {
+        // 1) Permissão + localização
+        final hasPerm = await _ensurePermission();
+        if (!hasPerm) {
+          throw 'Permissão de localização negada/desativada.';
+        }
+
+        // Move provisoriamente pro last known (UX melhor) enquanto busca atual
+        final last = await Geolocator.getLastKnownPosition();
+        if (last != null && mounted) {
+          _pos = last;
+          _mapController.move(LatLng(last.latitude, last.longitude), 14);
+        }
+
+        final pos = await Geolocator.getCurrentPosition(
+          desiredAccuracy: LocationAccuracy.high,
+        );
+        _pos = pos;
+
+        // 2) Busca farmácias via Overpass
+        final list = await _fetchPharmacies(pos.latitude, pos.longitude, _radiusMeters)
+          ..sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
+
+        // 3) Sucesso — sai do loop
+        if (!mounted) return;
+        setState(() {
+          _results = list;
+          _loading = false;
+          _retrying = false;
+          _error = null;
+        });
+
+        _mapController.move(LatLng(pos.latitude, pos.longitude), 14);
+        return;
+      } catch (e) {
+        _attempt++;
+        if (!untilSuccess) {
+          // tentativa única
+          if (!mounted) return;
+          setState(() {
+            _loading = false;
+            _retrying = false;
+            _error = 'Não foi possível buscar farmácias reais. ${e.toString()}';
+          });
+          return;
+        }
+
+        // retry contínuo com backoff (1,2,4,8,16,30,30…)
+        final secs = [1, 2, 4, 8, 16, 30];
+        final idx = _attempt - 1 >= secs.length ? secs.length - 1 : _attempt - 1;
+        final delay = Duration(seconds: secs[idx]);
+
+        if (!mounted || _stopRequested) return;
+        setState(() {
+          _loading = true; // mantém spinner
+          _error =
+              'Tentando novamente em ${delay.inSeconds}s (tentativa $_attempt)… ${e.toString()}';
+        });
+        await Future.delayed(delay);
+        // volta ao loop
       }
-      final pos = await Geolocator.getCurrentPosition(
-        desiredAccuracy: LocationAccuracy.high,
-      );
-      _pos = pos;
+    }
 
-      // 2) Busca farmácias via Overpass
-      final list = await _fetchPharmacies(pos.latitude, pos.longitude, _radiusMeters);
-
-      // 3) Ordena por distância
-      list.sort((a, b) => a.distanceMeters.compareTo(b.distanceMeters));
-
+    // Cancelado manualmente
+    if (mounted) {
       setState(() {
-        _results = list;
         _loading = false;
+        _retrying = false;
       });
-
-      // centraliza o mapa
-      _mapController.move(LatLng(pos.latitude, pos.longitude), 14);
-    } catch (e) {
-      // fallback mock se falhar
-      if (_pos != null) {
-        setState(() {
-          _results = _mockAround(_pos!.latitude, _pos!.longitude);
-          _loading = false;
-          _error = 'Não foi possível buscar farmácias reais. Exibindo mock.';
-        });
-      } else {
-        setState(() {
-          _loading = false;
-          _error = e.toString();
-        });
-      }
     }
   }
 
   Future<bool> _ensurePermission() async {
     bool serviceEnabled = await Geolocator.isLocationServiceEnabled();
     if (!serviceEnabled) {
-      // Tenta ao menos pedir pro usuário ligar localização
-      return false;
+      await Geolocator.openLocationSettings();
+      serviceEnabled = await Geolocator.isLocationServiceEnabled();
+      if (!serviceEnabled) return false;
     }
+
     LocationPermission perm = await Geolocator.checkPermission();
     if (perm == LocationPermission.denied) {
       perm = await Geolocator.requestPermission();
     }
-    if (perm == LocationPermission.denied || perm == LocationPermission.deniedForever) {
-      return false;
+    if (perm == LocationPermission.deniedForever) {
+      await Geolocator.openAppSettings();
+      perm = await Geolocator.checkPermission();
     }
-    return true;
+    return perm == LocationPermission.whileInUse || perm == LocationPermission.always;
   }
 
-  List<Pharmacy> _mockAround(double lat, double lng) {
-    final rnd = Random();
-    final offsets = List.generate(6, (i) => (rnd.nextDouble() - 0.5) * 0.02);
-    final names = [
-      'Farmácia Central',
-      'Drogaria Popular',
-      'Bem+ Saúde',
-      'Droga Rápida',
-      'Vida Farma',
-      'Saúde+'
-    ];
-    final distance = const Distance();
-    return List.generate(6, (i) {
-      final dLat = offsets[i];
-      final dLng = offsets[(i + 2) % offsets.length];
-      final p = LatLng(lat + dLat, lng + dLng);
-      final dist = distance(LatLng(lat, lng), p); // em metros
-      return Pharmacy(
-        name: names[i],
-        address: 'Endereço mock ${i + 1}',
-        lat: p.latitude,
-        lng: p.longitude,
-        distanceMeters: dist,
-      );
-    });
+  Future<Response> _postOverpass(String endpoint, String query) {
+    return _dio.post(
+      endpoint,
+      data: query,
+      options: Options(
+        responseType: ResponseType.json,
+        headers: const {
+          'Content-Type': 'text/plain; charset=UTF-8',
+          'Accept-Encoding': 'gzip',
+        },
+      ),
+    );
   }
 
   Future<List<Pharmacy>> _fetchPharmacies(double lat, double lng, int radius) async {
     final q = """
-[out:json][timeout:25];
+[out:json][timeout:30];
 (
   node["amenity"="pharmacy"](around:$radius,$lat,$lng);
   way["amenity"="pharmacy"](around:$radius,$lat,$lng);
   relation["amenity"="pharmacy"](around:$radius,$lat,$lng);
+  node["shop"="chemist"](around:$radius,$lat,$lng);
+  way["shop"="chemist"](around:$radius,$lat,$lng);
+  relation["shop"="chemist"](around:$radius,$lat,$lng);
 );
 out center tags;
 """;
-    final res = await _dio.post(_overpassUrl, data: q);
-    final elements = (res.data?['elements'] as List?) ?? [];
 
+    Response? res;
+    DioException? lastErr;
+
+    // tenta cada endpoint com pequeno backoff
+    for (final ep in _overpassEndpoints) {
+      try {
+        res = await _postOverpass(ep, q);
+        break;
+      } on DioException catch (e) {
+        lastErr = e;
+        await Future.delayed(const Duration(milliseconds: 500));
+      }
+    }
+    if (res == null) {
+      throw lastErr ?? Exception('Falha ao consultar Overpass.');
+    }
+
+    final elements = (res.data?['elements'] as List?) ?? [];
     final distanceCalc = const Distance();
     final list = <Pharmacy>[];
 
@@ -204,7 +261,9 @@ out center tags;
 
   String? _composeAddress(Map tags) {
     final parts = <String>[];
-    void add(dynamic v) { if (v is String && v.trim().isNotEmpty) parts.add(v.trim()); }
+    void add(dynamic v) {
+      if (v is String && v.trim().isNotEmpty) parts.add(v.trim());
+    }
 
     add(tags['addr:street']);
     add(tags['addr:housenumber']);
@@ -237,9 +296,9 @@ out center tags;
     ];
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       appBar: AppBar(
-        backgroundColor: Colors.white,
+        backgroundColor: Theme.of(context).scaffoldBackgroundColor,
         scrolledUnderElevation: 0,
         elevation: 0,
         title: Text(
@@ -250,15 +309,46 @@ out center tags;
             letterSpacing: 0.6,
           ),
         ),
+        actions: [
+          if (_retrying)
+            IconButton(
+              tooltip: 'Parar',
+              onPressed: () => setState(() => _stopRequested = true),
+              icon: const Icon(Icons.stop_circle_outlined, color: Colors.red),
+            )
+          else
+            IconButton(
+              tooltip: 'Tentar continuamente',
+              onPressed: () => _load(untilSuccess: true),
+              icon: const Icon(Icons.autorenew_outlined, color: Colors.black87),
+            ),
+          IconButton(
+            tooltip: 'Atualizar (1x)',
+            onPressed: () => _load(),
+            icon: const Icon(Icons.refresh_outlined, color: Colors.black87),
+          ),
+        ],
       ),
       body: _loading
-          ? const Center(child: CircularProgressIndicator())
+          ? Column(
+              children: [
+                if (_error != null)
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
+                    child: _InfoBanner(
+                      text: _error!,
+                      onClose: () => setState(() => _error = null),
+                    ),
+                  ),
+                const Expanded(child: Center(child: CircularProgressIndicator())),
+              ],
+            )
           : Column(
               children: [
                 if (_error != null)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
-                    child: _InfoBanner(  
+                    child: _InfoBanner(
                       text: _error!,
                       onClose: () => setState(() => _error = null),
                     ),
@@ -266,7 +356,7 @@ out center tags;
                 // MAPA
                 Container(
                   margin: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-                  height: 280,
+                  height: 300,
                   decoration: BoxDecoration(
                     color: AppColors.fieldFill,
                     borderRadius: BorderRadius.circular(18),
@@ -278,7 +368,7 @@ out center tags;
                       options: MapOptions(
                         initialCenter: pos != null
                             ? LatLng(pos.latitude, pos.longitude)
-                            : const LatLng(-23.5505, -46.6333), // fallback SP
+                            : const LatLng(-23.5505, -46.6333),
                         initialZoom: 14,
                       ),
                       children: [
@@ -288,6 +378,17 @@ out center tags;
                           userAgentPackageName: 'com.meditrack.app',
                         ),
                         MarkerLayer(markers: markers),
+                        RichAttributionWidget(
+                          attributions: [
+                            TextSourceAttribution(
+                              '© OpenStreetMap contributors',
+                              onTap: () => launchUrl(
+                                Uri.parse('https://www.openstreetmap.org/copyright'),
+                                mode: LaunchMode.externalApplication,
+                              ),
+                            ),
+                          ],
+                        ),
                       ],
                     ),
                   ),
@@ -308,29 +409,35 @@ out center tags;
                       const Spacer(),
                       Text('${(_radiusMeters / 1000).toStringAsFixed(1)} km',
                           style: GoogleFonts.poppins(color: const Color(0xFF6B6B75))),
-                      IconButton(
-                        tooltip: 'Atualizar',
-                        onPressed: _load,
-                        icon: const Icon(Icons.refresh),
-                      ),
                     ],
                   ),
                 ),
 
                 // LISTA
                 Expanded(
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-                    itemCount: _results.length,
-                    separatorBuilder: (_, __) => const SizedBox(height: 10),
-                    itemBuilder: (_, i) {
-                      final p = _results[i];
-                      return _PharmacyTile(
-                        p: p,
-                        onTap: () => _showPharmacy(p),
-                      );
-                    },
-                  ),
+                  child: _results.isEmpty
+                      ? Center(
+                          child: Text(
+                            _error == null
+                                ? 'Nenhuma farmácia encontrada neste raio.'
+                                : 'Falha ao carregar.\n${_error!}',
+                            textAlign: TextAlign.center,
+                            style: GoogleFonts.poppins(color: Colors.black54),
+                          ),
+                        )
+                      : ListView.separated(
+                          physics: const AlwaysScrollableScrollPhysics(),
+                          padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          itemCount: _results.length,
+                          separatorBuilder: (_, __) => const SizedBox(height: 10),
+                          itemBuilder: (_, i) {
+                            final p = _results[i];
+                            return _PharmacyTile(
+                              p: p,
+                              onTap: () => _showPharmacy(p),
+                            );
+                          },
+                        ),
                 ),
               ],
             ),
@@ -352,40 +459,49 @@ out center tags;
       context: context,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       builder: (_) => Padding(
-        padding: const EdgeInsets.fromLTRB(16, 12, 16, 24),
+        padding: const EdgeInsets.fromLTRB(16, 14, 16, 16),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // dentro de _showPharmacy(Pharmacy p), troque o Row atual por:
-Wrap(
-  spacing: 8,
-  runSpacing: 8,
-  children: [
-    FilledButton(
-      style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
-      onPressed: () {
-        Navigator.pop(context);
-        _mapController.move(LatLng(p.lat, p.lng), 17);
-      },
-      child: Text('Ver no mapa', style: GoogleFonts.poppins(color: Colors.white)),
-    ),
-      // NOVO: abre rotas no Google Maps / navegador
-      FilledButton.icon(
-        onPressed: () async {
-          Navigator.pop(context);
-          await _openDirections(p);
-        },
-        icon: const Icon(Icons.directions_outlined),
-        label: Text('Como chegar', style: GoogleFonts.poppins()),
-      ),
-
-      FilledButton.tonal(
-        onPressed: () async {
-          Navigator.pop(context);
-          await _load();
-        },
-        child: Text('Atualizar', style: GoogleFonts.poppins()),
+            Text(p.name, style: GoogleFonts.poppins(fontSize: 18, fontWeight: FontWeight.w700)),
+            const SizedBox(height: 4),
+            Text(
+              p.address ?? 'Endereço indisponível',
+              style: GoogleFonts.poppins(color: const Color(0xFF6B6B75)),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              '${(p.distanceMeters / 1000).toStringAsFixed(2)} km de você',
+              style: GoogleFonts.poppins(fontSize: 12, color: Colors.black87),
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton(
+                  style: FilledButton.styleFrom(backgroundColor: AppColors.primary),
+                  onPressed: () {
+                    Navigator.pop(context);
+                    _mapController.move(LatLng(p.lat, p.lng), 17);
+                  },
+                  child: Text('Ver no mapa', style: GoogleFonts.poppins(color: Colors.white)),
+                ),
+                FilledButton.icon(
+                  onPressed: () async {
+                    Navigator.pop(context);
+                    await _openDirections(p);
+                  },
+                  icon: const Icon(Icons.directions_outlined),
+                  label: Text('Como chegar', style: GoogleFonts.poppins()),
+                ),
+                FilledButton.tonal(
+                  onPressed: () async {
+                    Navigator.pop(context);
+                    await _load();
+                  },
+                  child: Text('Atualizar', style: GoogleFonts.poppins()),
                 ),
               ],
             ),
@@ -442,7 +558,7 @@ class _InfoBanner extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
       decoration: BoxDecoration(
-        color: const Color(0xFFFFF8E1), // amarelo clarinho
+        color: const Color(0xFFFFF8E1),
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: const Color(0xFFFFECB3)),
       ),
@@ -478,7 +594,6 @@ class _InfoBanner extends StatelessWidget {
   }
 }
 
-
 class _Dot extends StatelessWidget {
   final Color color;
   final String? tooltip;
@@ -487,8 +602,10 @@ class _Dot extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final dot = Container(
+      width: 16,
+      height: 16,
       decoration: BoxDecoration(color: color, shape: BoxShape.circle),
     );
-    return Tooltip(message: tooltip ?? '', child: dot);
+    return tooltip == null ? dot : Tooltip(message: tooltip!, child: dot);
   }
 }

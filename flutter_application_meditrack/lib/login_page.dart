@@ -2,14 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:flutter/cupertino.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:dio/dio.dart';
-
 import 'package:flutter_application_meditrack/home_page.dart';
 import 'package:flutter_application_meditrack/recovery_password_email.dart';
 import 'package:flutter_application_meditrack/register_page.dart';
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
 import 'package:flutter_application_meditrack/core/env.dart';
-import 'package:flutter_application_meditrack/core/api_client.dart';
-import 'package:flutter_application_meditrack/core/token_service.dart';
+import 'package:flutter_application_meditrack/services/auth_service.dart';
 
 class LoginPage extends StatefulWidget {
   const LoginPage({super.key});
@@ -22,13 +20,12 @@ class _LoginPageState extends State<LoginPage> {
   final _formKey = GlobalKey<FormState>();
 
   final _emailCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
+  final _passCtrl  = TextEditingController();
 
   bool _obscure = true;
   bool _isSubmitting = false;
 
-  // Usa o Dio global com baseUrl = BACKEND_URL
-  final Dio _dio = ApiClient.instance.dio;
+  final _auth = AuthService(); // usa seu AuthService
 
   String? _validateEmail(String? v) {
     if (v == null || v.trim().isEmpty) return 'Informe o e-mail';
@@ -49,49 +46,40 @@ class _LoginPageState extends State<LoginPage> {
 
     setState(() => _isSubmitting = true);
     try {
-      final res = await _dio.post('/auth/login', data: {
-        'email': _emailCtrl.text.trim(),
-        'password': _passCtrl.text,
-      });
-
-      // Espera { access_token: '...' }
-      final token = (res.data is Map) ? res.data['access_token'] as String? : null;
-      if (token == null || token.isEmpty) {
-        throw Exception('Resposta inesperada do servidor.');
-      }
-
-      await TokenService.instance.setToken(token);
+      // Chama o backend; o AuthService já salva o token no TokenService
+      await _auth.login(_emailCtrl.text.trim(), _passCtrl.text);
 
       if (!mounted) return;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(builder: (_) => const HomePage()),
       );
     } on DioException catch (e) {
-      String msg = 'Falha ao entrar. Tente novamente.';
-      if (e.response != null) {
-        final code = e.response?.statusCode ?? 0;
-        if (code == 401 || code == 403) {
-          msg = 'Credenciais inválidas. Verifique e-mail e senha.';
-        } else if (code == 400) {
-          msg = 'Requisição inválida (400). Confira os campos.';
-        } else if (code >= 500) {
-          msg = 'Servidor indisponível ($code).';
-        } else {
-          final data = e.response?.data;
-          if (data is Map && data['message'] != null) {
-            msg = data['message'].toString();
-          }
-        }
+      var msg = 'Falha ao entrar. Tente novamente.';
+      final code = e.response?.statusCode ?? 0;
+
+      if (code == 401 || code == 403) {
+        msg = 'Credenciais inválidas. Verifique e-mail e senha.';
+      } else if (code == 400) {
+        msg = 'Requisição inválida. Confira os campos.';
+      } else if (code >= 500) {
+        msg = 'Servidor indisponível ($code).';
       } else if (e.type == DioExceptionType.connectionTimeout ||
-          e.type == DioExceptionType.receiveTimeout) {
+                 e.type == DioExceptionType.receiveTimeout) {
         msg = 'Tempo esgotado. Verifique sua conexão.';
+      } else {
+        final data = e.response?.data;
+        if (data is Map && data['message'] != null) {
+          msg = data['message'].toString();
+        }
       }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
     } catch (_) {
       if (!mounted) return;
-      ScaffoldMessenger.of(context)
-          .showSnackBar(const SnackBar(content: Text('Erro inesperado ao entrar.')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Erro inesperado ao entrar.')),
+      );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
@@ -103,9 +91,10 @@ class _LoginPageState extends State<LoginPage> {
     if (Env.useMockAuth) {
       _emailCtrl.text = Env.mockEmail;
       _passCtrl.text  = Env.mockPass;
+      // Opcional: auto-login em modo mock
+      // WidgetsBinding.instance.addPostFrameCallback((_) => _submit());
     }
   }
-
 
   @override
   void dispose() {
@@ -119,7 +108,7 @@ class _LoginPageState extends State<LoginPage> {
     final bottomInset = MediaQuery.of(context).viewInsets.bottom;
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       resizeToAvoidBottomInset: true,
       body: SafeArea(
         child: SingleChildScrollView(
@@ -195,7 +184,7 @@ class _LoginPageState extends State<LoginPage> {
                     ),
                     onPressed: () {
                       Navigator.of(context).push(
-                        MaterialPageRoute(builder: (_) => const SendResetCodePage()),
+                        MaterialPageRoute(builder: (_) => const RecoveryPasswordEmailPage()),
                       );
                     },
                     child: const Text(

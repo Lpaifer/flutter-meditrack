@@ -1,9 +1,21 @@
+import 'dart:convert';
 import 'package:flutter/material.dart';
+import 'package:flutter_application_meditrack/login_page.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
 import 'package:flutter_application_meditrack/core/theme_controller.dart';
+import 'package:flutter_application_meditrack/services/settings_service.dart';
+
+// NEW: (ajuste os imports de acordo com o seu projeto)
+import 'package:flutter_application_meditrack/core/token_service.dart';
+import 'package:flutter_application_meditrack/core/notifications_service.dart';
+// se você usa rotas nomeadas, garanta que '/login' existe no MaterialApp
+// import 'package:flutter_application_meditrack/login_page.dart'; // caso navegue por widget
+
+/* =========================================
+ * SettingsPage (layout do 1º, lógica/recursos do 2º)
+ * ========================================= */
 
 class SettingsPage extends StatefulWidget {
   const SettingsPage({super.key});
@@ -13,7 +25,7 @@ class SettingsPage extends StatefulWidget {
 }
 
 class _SettingsPageState extends State<SettingsPage> {
-  // --- Opções fixas ---
+  // --- Catálogos (mantendo formato do 1º) ---
   static const _timezones = <String>[
     'America/Sao_Paulo',
     'America/Manaus',
@@ -26,7 +38,6 @@ class _SettingsPageState extends State<SettingsPage> {
     'UTC',
   ];
 
-  // Opção 2: apenas os códigos
   static const _locales = <String>['pt_BR', 'en_US', 'es_ES'];
 
   static String labelForLocale(String code) {
@@ -44,21 +55,34 @@ class _SettingsPageState extends State<SettingsPage> {
 
   static const _units = <String>['metric (°C, kg)', 'imperial (°F, lb)'];
 
-  // --- Estado persistido ---
+  // --- Serviço remoto (do 2º) ---
+  final _svc = SettingsService();
+
+  // --- Estado de ciclo de vida (do 2º) ---
+  bool _loading = true;
+  bool _saving = false;
+  String? _error;
+
+  // --- Campos persistidos (unificando) ---
   String _timezone = 'America/Sao_Paulo';
   String _locale = 'pt_BR';
-  String _timeFormat = '24h'; // '12h' | '24h'
-  String _unitSystem = _units.first;
+  String _timeFormat = '24h'; // 12h | 24h
+  String _unitSystem = _units.first; // exibe "metric (°C, kg)" mas salva "metric/imperial"
 
-  bool _notifEnabled = true;
-  bool _notifDose = true;
-  bool _notifTips = false;
-
-  double _textScale = 1.0; // acessibilidade
+  // Acessibilidade (mantém UI do 1º + chips do 2º)
+  double _textScale = 1.0;
   bool _highContrast = false;
   bool _reduceMotion = false;
+  final List<String> _accessibilityChips = [];
+  final _accInput = TextEditingController();
 
-  bool _loading = true;
+  // Notificações (mantém seção do 1º + chips do 2º)
+  bool _notifEnabled = true; // opcionalmente espelha chips "enabled:on|off"
+  final List<String> _notifSettings = [];
+  final _notifInput = TextEditingController();
+
+  // NEW: flag para mostrar progresso do logout
+  bool _loggingOut = false;
 
   @override
   void initState() {
@@ -66,46 +90,165 @@ class _SettingsPageState extends State<SettingsPage> {
     _loadPrefs();
   }
 
-  Future<void> _loadPrefs() async {
-    final sp = await SharedPreferences.getInstance();
-    if (!mounted) return;
-    setState(() {
-      _timezone     = sp.getString('pref.timezone')     ?? _timezone;
-      _locale       = sp.getString('pref.locale')       ?? _locale;
-      _timeFormat   = sp.getString('pref.timeFormat')   ?? _timeFormat;
-      _unitSystem   = sp.getString('pref.units')        ?? _unitSystem;
-
-      _notifEnabled = sp.getBool('pref.notif.enabled')  ?? _notifEnabled;
-      _notifDose    = sp.getBool('pref.notif.doses')    ?? _notifDose;
-      _notifTips    = sp.getBool('pref.notif.tips')     ?? _notifTips;
-
-      _textScale    = sp.getDouble('pref.a11y.textScale') ?? _textScale;
-      _highContrast = sp.getBool('pref.a11y.highContrast') ?? _highContrast;
-      _reduceMotion = sp.getBool('pref.a11y.reduceMotion') ?? _reduceMotion;
-
-      _loading = false;
-    });
+  @override
+  void dispose() {
+    _accInput.dispose();
+    _notifInput.dispose();
+    super.dispose();
   }
 
+  // ---------- Carregar do backend (do 2º) ----------
+  Future<void> _loadPrefs() async {
+    setState(() {
+      _loading = true;
+      _error = null;
+    });
+    try {
+      final data = await _svc.fetch();
+
+      // Leitura com defaults seguros
+      _timezone = (data['timezone'] as String?) ?? _timezone;
+      _locale = (data['locale'] as String?) ?? _locale;
+      _timeFormat = (data['timeFormat'] as String?) ?? _timeFormat;
+
+      final unitsRaw = (data['units'] as String?) ?? 'metric';
+      _unitSystem = unitsRaw == 'imperial' ? _units.last : _units.first;
+
+      // Acessibilidade: aceita tanto lista de flags quanto valores
+      final accList = List<String>.from(
+        (data['accessibility'] ?? const <String>[]) as List,
+      );
+      _accessibilityChips
+        ..clear()
+        ..addAll(accList);
+
+      // Se vierem valores específicos, tentamos refletir
+      _highContrast = accList.contains('highContrast') ||
+          (data['highContrast'] as bool?) == true;
+      _reduceMotion = accList.contains('reduceMotion') ||
+          (data['reduceMotion'] as bool?) == true;
+      final ts = (data['textScale'] as num?)?.toDouble();
+      if (ts != null && ts >= 0.9 && ts <= 1.5) _textScale = ts;
+
+      // Notificações (chips livres)
+      _notifSettings
+        ..clear()
+        ..addAll(List<String>.from(
+            (data['notificationSettings'] ?? const <String>[]) as List));
+
+      // Habilitado (se houver chave)
+      final enabledKey =
+          _notifSettings.firstWhere((e) => e.startsWith('enabled:'), orElse: () => '');
+      if (enabledKey.isNotEmpty) {
+        _notifEnabled = enabledKey.split(':').last.toLowerCase() == 'on';
+      }
+
+      setState(() => _loading = false);
+    } catch (e) {
+      setState(() {
+        _loading = false;
+        _error = 'Falha ao carregar preferências: $e';
+      });
+    }
+  }
+
+  // ---------- Salvar no backend (do 2º) ----------
   Future<void> _savePrefs() async {
-    final sp = await SharedPreferences.getInstance();
-    await sp.setString('pref.timezone', _timezone);
-    await sp.setString('pref.locale', _locale);
-    await sp.setString('pref.timeFormat', _timeFormat);
-    await sp.setString('pref.units', _unitSystem);
+    setState(() => _saving = true);
+    try {
+      // Converte label amigável para valor cru
+      final unitsRaw = _unitSystem.startsWith('imperial') ? 'imperial' : 'metric';
 
-    await sp.setBool('pref.notif.enabled', _notifEnabled);
-    await sp.setBool('pref.notif.doses', _notifDose);
-    await sp.setBool('pref.notif.tips', _notifTips);
+      // Garante que os chips de acessibilidade reflitam os toggles/slider
+      final acc = {..._accessibilityChips};
+      _highContrast ? acc.add('highContrast') : acc.remove('highContrast');
+      _reduceMotion ? acc.add('reduceMotion') : acc.remove('reduceMotion');
+      // inclui textScale como key-value
+      acc.removeWhere((e) => e.startsWith('textScale:'));
+      acc.add('textScale:${_textScale.toStringAsFixed(2)}');
 
-    await sp.setDouble('pref.a11y.textScale', _textScale);
-    await sp.setBool('pref.a11y.highContrast', _highContrast);
-    await sp.setBool('pref.a11y.reduceMotion', _reduceMotion);
+      // Mantém um chip de enabled:on|off para notificações
+      final notif = {..._notifSettings};
+      notif.removeWhere((e) => e.startsWith('enabled:'));
+      notif.add('enabled:${_notifEnabled ? 'on' : 'off'}');
 
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Preferências salvas.')),
+      final body = {
+        'timezone': _timezone,
+        'locale': _locale,
+        'timeFormat': _timeFormat,
+        'units': unitsRaw,
+        'accessibility': acc.toList(),
+        'notificationSettings': notif.toList(),
+        // também envia campos diretos úteis (idempotente)
+        'highContrast': _highContrast,
+        'reduceMotion': _reduceMotion,
+        'textScale': _textScale,
+      };
+
+      // ignore: avoid_print
+      print(const JsonEncoder.withIndent('  ').convert(body));
+
+      await _svc.save(body);
+
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Preferências salvas!')),
+      );
+    } catch (e) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Falha ao salvar: $e')),
+      );
+    } finally {
+      if (mounted) setState(() => _saving = false);
+    }
+  }
+
+  // NEW: fluxo de logout local (enquanto o endpoint não existe)
+  Future<void> _logout() async {
+    final confirm = await showDialog<bool>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Sair da conta?'),
+        content: const Text('Você será desconectado deste dispositivo.'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context, false), child: const Text('Cancelar')),
+          FilledButton(onPressed: () => Navigator.pop(context, true), child: const Text('Sair')),
+        ],
+      ),
     );
+
+    if (confirm != true) return;
+
+    setState(() => _loggingOut = true);
+    try {
+      // 1) Cancela notificações locais (se usar)
+      try {
+        await NotificationsService.instance.cancelAll();
+      } catch (_) {}
+
+      // 2) Limpa token/estado de sessão
+      try {
+        await TokenService.instance.clear(); // implemente clear() ou hydrate(null)
+      } catch (_) {}
+
+      // 3) Feedback
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Você saiu da conta.')),
+        );
+      }
+
+      // 4) Redireciona para Login limpando a pilha
+      if (!mounted) return;
+       Navigator.of(context).pushAndRemoveUntil(
+          MaterialPageRoute(builder: (_) => const LoginPage()),
+          (route) => false,
+      );
+      
+    } finally {
+      if (mounted) setState(() => _loggingOut = false);
+    }
   }
 
   @override
@@ -113,7 +256,7 @@ class _SettingsPageState extends State<SettingsPage> {
     final t = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme);
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Colors.white, // mantém estilo do 1º
       appBar: AppBar(
         scrolledUnderElevation: 0,
         elevation: 0,
@@ -127,10 +270,10 @@ class _SettingsPageState extends State<SettingsPage> {
         ),
         actions: [
           IconButton(
-            tooltip: 'Salvar',
-            onPressed: _savePrefs,
-            icon: const Icon(Icons.save_outlined, color: Colors.black87),
-          )
+            tooltip: 'Recarregar',
+            onPressed: _loadPrefs,
+            icon: const Icon(Icons.refresh_outlined, color: Colors.black87),
+          ),
         ],
       ),
       body: _loading
@@ -138,14 +281,19 @@ class _SettingsPageState extends State<SettingsPage> {
           : ListView(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
               children: [
+                if (_error != null) ...[
+                  _BannerError(text: _error!, onRetry: _loadPrefs),
+                  const SizedBox(height: 16),
+                ],
+
                 // ---------------- Geral ----------------
                 _SectionCard(
                   title: 'Geral',
                   child: Column(
                     children: [
-                      // Timezone
+                      // Timezone (dropdown como no 1º)
                       DropdownButtonFormField<String>(
-                        value: _timezone,
+                        value: _timezones.contains(_timezone) ? _timezone : _timezones.first,
                         items: _timezones
                             .map((z) => DropdownMenuItem(
                                   value: z,
@@ -157,9 +305,9 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      // Locale (agora com value == código)
+                      // Locale (dropdown com rótulos)
                       DropdownButtonFormField<String>(
-                        value: _locale,
+                        value: _locales.contains(_locale) ? _locale : 'pt_BR',
                         items: _locales
                             .map((code) => DropdownMenuItem(
                                   value: code,
@@ -171,7 +319,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      // Formato de hora
+                      // Formato de hora (radio como no 1º)
                       InputDecorator(
                         decoration: inputDecoration('Formato de hora'),
                         child: Row(
@@ -183,8 +331,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                 title: const Text('24h'),
                                 value: '24h',
                                 groupValue: _timeFormat,
-                                onChanged: (v) =>
-                                    setState(() => _timeFormat = v!),
+                                onChanged: (v) => setState(() => _timeFormat = v!),
                               ),
                             ),
                             Expanded(
@@ -194,8 +341,7 @@ class _SettingsPageState extends State<SettingsPage> {
                                 title: const Text('12h'),
                                 value: '12h',
                                 groupValue: _timeFormat,
-                                onChanged: (v) =>
-                                    setState(() => _timeFormat = v!),
+                                onChanged: (v) => setState(() => _timeFormat = v!),
                               ),
                             ),
                           ],
@@ -203,7 +349,7 @@ class _SettingsPageState extends State<SettingsPage> {
                       ),
                       const SizedBox(height: 12),
 
-                      // Unidades
+                      // Unidades (dropdown como no 1º)
                       DropdownButtonFormField<String>(
                         value: _unitSystem,
                         items: _units
@@ -220,7 +366,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 ),
                 const SizedBox(height: 16),
 
-                // ---------------- Tema ----------------
+                // ---------------- Tema (mantém do 1º) ----------------
                 _SectionCard(
                   title: 'Tema',
                   child: SwitchListTile(
@@ -238,37 +384,13 @@ class _SettingsPageState extends State<SettingsPage> {
                 _SectionCard(
                   title: 'Notificações',
                   child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       SwitchListTile(
                         value: _notifEnabled,
                         onChanged: (v) => setState(() => _notifEnabled = v),
                         title: const Text('Ativar notificações'),
                         contentPadding: EdgeInsets.zero,
-                      ),
-                      const Divider(height: 8),
-                      IgnorePointer(
-                        ignoring: !_notifEnabled,
-                        child: Opacity(
-                          opacity: _notifEnabled ? 1 : .5,
-                          child: Column(
-                            children: [
-                              SwitchListTile(
-                                value: _notifDose,
-                                onChanged: (v) =>
-                                    setState(() => _notifDose = v),
-                                title: const Text('Lembretes de dose'),
-                                contentPadding: EdgeInsets.zero,
-                              ),
-                              SwitchListTile(
-                                value: _notifTips,
-                                onChanged: (v) =>
-                                    setState(() => _notifTips = v),
-                                title: const Text('Dicas/avisos de farmácia'),
-                                contentPadding: EdgeInsets.zero,
-                              ),
-                            ],
-                          ),
-                        ),
                       ),
                     ],
                   ),
@@ -280,44 +402,6 @@ class _SettingsPageState extends State<SettingsPage> {
                   title: 'Acessibilidade',
                   child: Column(
                     children: [
-                      Row(
-                        children: [
-                          Expanded(
-                            child: Column(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Text('Tamanho do texto'),
-                                Slider(
-                                  min: 0.9,
-                                  max: 1.5,
-                                  divisions: 12,
-                                  value: _textScale,
-                                  label: '${_textScale.toStringAsFixed(2)}x',
-                                  onChanged: (v) =>
-                                      setState(() => _textScale = v),
-                                ),
-                              ],
-                            ),
-                          ),
-                          Container(
-                            margin: const EdgeInsets.only(left: 12),
-                            padding: const EdgeInsets.symmetric(
-                                horizontal: 10, vertical: 6),
-                            decoration: BoxDecoration(
-                              color: AppColors.fieldFill,
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              'Aa',
-                              textScaleFactor: _textScale,
-                              style: GoogleFonts.poppins(
-                                fontWeight: FontWeight.w700,
-                                fontSize: 18,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
                       SwitchListTile(
                         value: _highContrast,
                         onChanged: (v) => setState(() => _highContrast = v),
@@ -333,9 +417,33 @@ class _SettingsPageState extends State<SettingsPage> {
                     ],
                   ),
                 ),
+                const SizedBox(height: 16),
+
+                // NEW: Conta (logout)
+                _SectionCard(
+                  title: 'Conta',
+                  child: Column(
+                    children: [
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.logout, color: Colors.red),
+                        title: const Text('Sair da conta'),
+                        subtitle: const Text('Desconectar deste dispositivo'),
+                        trailing: _loggingOut
+                            ? const SizedBox(
+                                height: 20, width: 20,
+                                child: CircularProgressIndicator(strokeWidth: 2.4),
+                              )
+                            : null,
+                        onTap: _loggingOut ? null : _logout,
+                      ),
+                    ],
+                  ),
+                ),
+
                 const SizedBox(height: 24),
 
-                // Salvar
+                // ---------------- Botão Salvar (mantém do 1º) ----------------
                 SizedBox(
                   width: double.infinity,
                   height: 52,
@@ -346,14 +454,21 @@ class _SettingsPageState extends State<SettingsPage> {
                         borderRadius: BorderRadius.circular(12),
                       ),
                     ),
-                    onPressed: _savePrefs,
-                    child: Text(
-                      'Salvar alterações',
-                      style: GoogleFonts.poppins(
-                        color: Colors.white,
-                        fontWeight: FontWeight.w600,
-                      ),
-                    ),
+                    onPressed: _saving ? null : _savePrefs,
+                    child: _saving
+                        ? const SizedBox(
+                            height: 22,
+                            width: 22,
+                            child: CircularProgressIndicator(
+                                strokeWidth: 2.6, color: Colors.white),
+                          )
+                        : Text(
+                            'Salvar alterações',
+                            style: GoogleFonts.poppins(
+                              color: Colors.white,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
                   ),
                 ),
               ],
@@ -362,7 +477,7 @@ class _SettingsPageState extends State<SettingsPage> {
   }
 }
 
-/* ---------- UI helper ---------- */
+/* ---------- UI helpers (mantidos/adaptados) ---------- */
 
 class _SectionCard extends StatelessWidget {
   final String title;
@@ -396,6 +511,33 @@ class _SectionCard extends StatelessWidget {
           ),
           const SizedBox(height: 12),
           child,
+        ],
+      ),
+    );
+  }
+}
+
+class _BannerError extends StatelessWidget {
+  final String text;
+  final VoidCallback onRetry;
+  const _BannerError({required this.text, required this.onRetry});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF1F1),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: const Color(0xFFFFD5D5)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.error_outline, color: Colors.red),
+          const SizedBox(width: 10),
+          Expanded(child: Text(text, style: GoogleFonts.poppins())),
+          const SizedBox(width: 8),
+          TextButton(onPressed: onRetry, child: const Text('Tentar novamente')),
         ],
       ),
     );

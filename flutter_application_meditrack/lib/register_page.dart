@@ -4,8 +4,7 @@ import 'package:dio/dio.dart';
 import 'package:flutter_application_meditrack/ui/input_styles.dart';
 import 'package:flutter_application_meditrack/login_page.dart';
 import 'package:flutter_application_meditrack/home_page.dart';
-import 'package:flutter_application_meditrack/core/api_client.dart';
-import 'package:flutter_application_meditrack/core/token_service.dart';
+import 'package:flutter_application_meditrack/services/auth_service.dart';
 
 class RegisterPage extends StatefulWidget {
   const RegisterPage({super.key, this.onTapEntrar});
@@ -22,14 +21,14 @@ class _RegisterPageState extends State<RegisterPage> {
 
   final _nameCtrl = TextEditingController();
   final _emailCtrl = TextEditingController();
-  final _passCtrl = TextEditingController();
+  final _passCtrl  = TextEditingController();
   final _pass2Ctrl = TextEditingController();
 
   bool _obscure1 = true;
   bool _obscure2 = true;
   bool _isSubmitting = false;
 
-  final Dio _dio = ApiClient.instance.dio;
+  final _auth = AuthService();
 
   String? _validateEmail(String? v) {
     if (v == null || v.trim().isEmpty) return 'Informe o email';
@@ -45,39 +44,23 @@ class _RegisterPageState extends State<RegisterPage> {
   }
 
   Future<void> _submit() async {
-    final formOk = _formKey.currentState?.validate() ?? false;
-    if (!formOk) return;
+    if (!(_formKey.currentState?.validate() ?? false)) return;
 
     FocusScope.of(context).unfocus();
     setState(() => _isSubmitting = true);
 
-    final email = _emailCtrl.text.trim();
+    final name     = _nameCtrl.text.trim();
+    final email    = _emailCtrl.text.trim().toLowerCase();
     final password = _passCtrl.text;
-    final name = _nameCtrl.text.trim();
 
     try {
-      // 1) Registrar
-      final reg = await _dio.post('/auth/register', data: {
-        'email': email,
-        'password': password,
-        // Caso seu backend aceite nome no cadastro:
-        'name': name.isEmpty ? null : name,
-      });
+      // 1) Tenta registrar (pode retornar token em alguns backends)
+      final token = await _auth.register(name: name, email: email, password: password);
 
-      // Alguns backends já retornam token no register
-      String? token;
-      if (reg.data is Map) {
-        final map = reg.data as Map;
-        if (map['access_token'] is String && (map['access_token'] as String).isNotEmpty) {
-          token = map['access_token'] as String;
-        }
+      // 2) Se não retornou token no /register, faz login automático
+      if (token == null) {
+        await _auth.login(email, password);
       }
-
-      // 2) Se não veio token, faz login automático
-      token ??= await _loginAfterRegister(email, password);
-
-      // 3) Salva token e vai pra Home
-      await TokenService.instance.setToken(token);
 
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -89,46 +72,37 @@ class _RegisterPageState extends State<RegisterPage> {
       );
     } on DioException catch (e) {
       String msg = 'Falha ao criar conta. Tente novamente.';
-      if (e.response != null) {
-        final code = e.response?.statusCode ?? 0;
-        if (code == 409) {
-          msg = 'Email já cadastrado.';
-        } else if (code == 400) {
-          msg = 'Dados inválidos (400). Confira os campos.';
-        } else if (code >= 500) {
-          msg = 'Servidor indisponível ($code).';
-        } else {
-          final data = e.response?.data;
-          if (data is Map && data['message'] != null) {
-            msg = data['message'].toString();
-          }
+      final code = e.response?.statusCode ?? 0;
+
+      if (e.type == DioExceptionType.connectionTimeout ||
+          e.type == DioExceptionType.receiveTimeout ||
+          e.type == DioExceptionType.sendTimeout) {
+        msg = 'Tempo esgotado. O servidor pode estar iniciando no Render. Tente novamente.';
+      } else if (code == 409) {
+        msg = 'Email já cadastrado.';
+      } else if (code == 400) {
+        msg = 'Dados inválidos (400). Confira os campos.';
+      } else if (code >= 500) {
+        msg = 'Servidor indisponível ($code).';
+      } else {
+        final data = e.response?.data;
+        if (data is Map && data['message'] != null) {
+          msg = (data['message'] is List)
+              ? (data['message'] as List).join('\n')
+              : data['message'].toString();
         }
-      } else if (e.type == DioExceptionType.connectionTimeout ||
-          e.type == DioExceptionType.receiveTimeout) {
-        msg = 'Tempo esgotado. Verifique sua conexão.';
       }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(msg)));
-    } catch (_) {
+    } catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Erro inesperado ao criar conta.')),
+        SnackBar(content: Text('Erro inesperado: $e')),
       );
     } finally {
       if (mounted) setState(() => _isSubmitting = false);
     }
-  }
-
-  Future<String> _loginAfterRegister(String email, String password) async {
-    final res = await _dio.post('/auth/login', data: {
-      'email': email,
-      'password': password,
-    });
-    final token = (res.data is Map) ? res.data['access_token'] as String? : null;
-    if (token == null || token.isEmpty) {
-      throw Exception('Não foi possível autenticar após o cadastro.');
-    }
-    return token;
   }
 
   @override
@@ -145,7 +119,7 @@ class _RegisterPageState extends State<RegisterPage> {
     final textTheme = GoogleFonts.poppinsTextTheme(Theme.of(context).textTheme);
 
     return Scaffold(
-      backgroundColor: Colors.white,
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         child: Center(
           child: SingleChildScrollView(
